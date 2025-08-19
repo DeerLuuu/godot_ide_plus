@@ -4,16 +4,34 @@ extends EditorPlugin
 var script_editor: ScriptEditor
 var current_popup: PopupMenu
 
-const CALLBACK_MENU_PRIORITY = 1500
-enum CALLBACK_TYPES { FUNCTION, VARIABLE }
+enum MenuItemType {
+	CREATE_LOCAL_VARIABLE = 1000,
+	CREATE_VARIABLE = 1500,
+}
+# Godot 变量类型正则表达式映射表
+const VARIABLE_REGEX_MAP: Dictionary = {
+	# 基础标量类型
+	"null": "^null$",
+	"bool": "^(true|false)$",
+	"int": "^-?\\d+$",
+	"float": "^-?(\\d+\\.\\d*|\\.\\d+|\\d+)([eE][-+]?\\d+)?$",
+	"String": '^"(?:[^"\\\\]|\\\\["\\\\tnr])*"$',  # 支持完整转义序列
 
-func _enable_plugin() -> void:
-	# Add autoloads here.
-	pass
+	# 集合类型
+	"Array": "^\\[\\s*(?:[^\\[\\]]*(?:\\[[^\\[\\]]*\\][^\\[\\]]*)*)?\\s*\\]$",
+	"Dictionary": "^\\{\\s*(?:(?:\"(?:[^\"\\\\]|\\\\[\"\\\\tnr])*\"\\s*:\\s*[^,{}]*(?:,(?!\\s*[\\]}])|(?=\\s*\\})))\\s*)*\\}$",
 
-func _disable_plugin() -> void:
-	# Remove autoloads here.
-	pass
+	# 向量/数学类型
+	"Vector2": "^Vector2\\(\\s*-?\\d*\\.?\\d+\\s*,\\s*-?\\d*\\.?\\d+\\s*\\)$",
+	"Vector3": "^Vector3\\(\\s*-?\\d*\\.?\\d+\\s*,\\s*-?\\d*\\.?\\d+\\s*,\\s*-?\\d*\\.?\\d+\\s*\\)$",
+	"Color": "^Color\\(\\s*\\d*\\.?\\d+\\s*,\\s*\\d*\\.?\\d+\\s*,\\s*\\d*\\.?\\d+\\s*(?:,\\s*\\d*\\.?\\d+\\s*)?\\)$",
+	"Rect2": "^Rect2\\(\\s*-?\\d*\\.?\\d+\\s*,\\s*-?\\d*\\.?\\d+\\s*,\\s*-?\\d*\\.?\\d+\\s*,\\s*-?\\d*\\.?\\d+\\s*\\)$",
+
+	# 引擎对象类型
+	"NodePath": "^NodePath\\(\\s*\"(?:[^\"\\\\]|\\\\[\"\\\\tnr])*\"\\s*\\)$",
+	"rid": "^RID\\(\\s*\\)$",  # RID 使用空构造函数
+	"StringName": "^StringName\\(\\s*\"(?:[^\"\\\\]|\\\\[\"\\\\tnr])*\"\\s*\\)$"
+}
 
 func _enter_tree() -> void:
 	script_editor = EditorInterface.get_script_editor()
@@ -25,6 +43,7 @@ func _exit_tree() -> void:
 		script_editor.disconnect("editor_script_changed", _on_script_changed)
 	_cleanup_current_script()
 
+# FUNC 查找代码编辑器
 func _find_code_edit(node: Node) -> CodeEdit:
 	if node is CodeEdit: return node
 	for child in node.get_children():
@@ -32,7 +51,7 @@ func _find_code_edit(node: Node) -> CodeEdit:
 		if result: return result
 	return null
 
-
+# FUNC 查找右键菜单
 func _find_popup_menu(node: Node) -> PopupMenu:
 	if node is PopupMenu: return node
 	for child in node.get_children():
@@ -50,6 +69,16 @@ func _on_script_changed(script : Script) -> void:
 	if not current_popup: return
 	current_popup.connect("about_to_popup", _on_popup_about_to_show)
 
+# FUNC 文本是否符合变量值的格式
+func is_variable(selected_text : String) -> Array:
+	for i in VARIABLE_REGEX_MAP.values():
+		var regex = RegEx.new()
+		regex.compile(i)
+		var result = regex.search(selected_text)
+		if result:
+			return [true, VARIABLE_REGEX_MAP.find_key(i)]
+	return [false]
+
 func _on_popup_about_to_show() -> void:
 	var current_editor : ScriptEditorBase = script_editor.get_current_editor()
 	if not current_editor: return
@@ -58,26 +87,34 @@ func _on_popup_about_to_show() -> void:
 	if not code_edit: return
 
 	var selected_text = _get_selected_text(code_edit)
-	if selected_text.is_empty():
-		return
+	if selected_text.is_empty(): return
 
 	var current_line = get_current_line_text(code_edit)
 
-	#if utils.should_show_create_variable(code_edit, current_line, VARIABLE_NAME_REGEX, _get_editor_settings()):
-	_create_menu_item(
-		"提取为临时变量",
-		code_edit,
-		CALLBACK_TYPES.VARIABLE
-	)
+	var is_variables : Array = is_variable(selected_text)
+	if is_variables[0]:
+		_create_menu_item(
+			"提取为临时变量",
+			code_edit,
+			is_variables[1],
+			MenuItemType.CREATE_LOCAL_VARIABLE,
+			true
+		)
+		_create_menu_item(
+			"提取为全局变量",
+			code_edit,
+			is_variables[1],
+			MenuItemType.CREATE_VARIABLE,
+		)
 
 # FUNC 创建菜单按钮
-func _create_menu_item(item_text: String, code_edit: CodeEdit, callback_type: CALLBACK_TYPES) -> void:
-	current_popup.add_separator()
-	current_popup.add_item(item_text, 1500)
+func _create_menu_item(item_text: String, code_edit: CodeEdit, type : String, item_type : MenuItemType, has_separator : bool = false) -> void:
+	if has_separator: current_popup.add_separator()
+	current_popup.add_item(item_text, item_type)
 
 	if current_popup.is_connected("id_pressed", _on_menu_item_pressed):
 		current_popup.disconnect("id_pressed", _on_menu_item_pressed)
-	current_popup.connect("id_pressed", _on_menu_item_pressed.bind(code_edit, 1500, callback_type))
+	current_popup.connect("id_pressed", _on_menu_item_pressed.bind(code_edit, type))
 
 func replace_selection(code_edit: CodeEdit, new_text: String) -> bool:
 	var current_line : int = code_edit.get_caret_line()
@@ -92,22 +129,25 @@ func replace_selection(code_edit: CodeEdit, new_text: String) -> bool:
 	code_edit.insert_text(new_text, selection_start_line, selection_start)
 	return true
 
-func create_variable(code_edit: CodeEdit) -> void:
+func create_local_variable(code_edit: CodeEdit, type : String) -> void:
 	var current_line : int = code_edit.get_caret_line()
 	var line_text : String = code_edit.get_line(current_line)
 	var selected_text : String = code_edit.get_selected_text()
 
 	var end_column : int = line_text.length()
 
-	var code_text: String = "\tvar new_value := %s" % [selected_text]
+	var code_text: String = "\tvar new_value : %s = %s" % [type, selected_text]
 
 	replace_selection(code_edit, "new_value")
 	code_edit.insert_line_at(current_line, code_text)
 	code_edit.select(current_line, 5, current_line, 14)
 	code_edit.add_selection_for_next_occurrence()
 
-func _on_menu_item_pressed(id: int, code_edit: CodeEdit, target_index: int, callback_type: CALLBACK_TYPES):
-	create_variable(code_edit)
+func _on_menu_item_pressed(id: int, code_edit: CodeEdit, type : String):
+	if id == MenuItemType.CREATE_LOCAL_VARIABLE:
+		create_local_variable(code_edit, type)
+	if id == MenuItemType.CREATE_VARIABLE:
+		create_local_variable(code_edit, type)
 
 # FUNC 清理当前脚本二级窗口连接
 func _cleanup_current_script():
