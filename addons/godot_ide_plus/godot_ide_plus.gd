@@ -5,9 +5,27 @@ var script_editor: ScriptEditor
 var current_popup: PopupMenu
 
 enum MenuItemType {
-	CREATE_LOCAL_VARIABLE = 1000,
-	CREATE_VARIABLE = 1500,
+	CREATE_LOCAL_VARIABLE = 999,
+	CREATE_VARIABLE = 1111,
+	CREATE_VARIABLE_DECLARATION = 2222,
 }
+const VARIABLE_DECLARATION_REGEX_MAP : Dictionary = {
+	# 基本变量声明 (var a)
+	"1": r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+
+	# 带类型注解 (var a : int)
+	"2": r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)",
+
+	# 带赋值 (var a = 1)
+	"3": r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(\S+)",
+
+	# 完整声明 (var a : int = 1)
+	"4": r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(\S+)",
+
+	# 短变量声明 (var a := 1)
+	"5": r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:=\s*(\S+)"
+}
+
 # Godot 变量类型正则表达式映射表
 const VARIABLE_REGEX_MAP: Dictionary = {
 	# 基础标量类型
@@ -59,6 +77,38 @@ func _find_popup_menu(node: Node) -> PopupMenu:
 		if result: return result
 	return null
 
+func _find_class_and_extends_after(code_edit: CodeEdit) -> int:
+	var scripts := code_edit.text.split("\n")
+	for i : int in scripts.size():
+		if scripts[i].begins_with("#"): continue
+		if scripts[i].contains("extends"):
+			if scripts[i + 1].contains("class_name"): return i + 2
+			return i + 1
+		if scripts[i].contains("class_name"):
+			if scripts[i + 1].contains("extends"): return i + 2
+			return i + 1
+	return 0
+
+func get_variable_declaration_type(line_text : String) -> String:
+	if not line_text.contains(":"): return "Variant"
+	if line_text.contains("="):
+		var value_start_index : int = line_text.find("=")
+		var value_string : String = line_text.erase(0, value_start_index + 1).strip_edges()
+		var type_string : String = is_variable(value_string)[1]
+		if type_string == "int":
+			type_string = "int" if line_text.contains("int") else "float"
+		return is_variable(value_string)[1]
+	var value_start_index : int = line_text.find(":")
+	var type_string : String = line_text.erase(0, value_start_index + 1).strip_edges()
+	return type_string
+
+func get_var_line_var_name(line_text : String) -> String:
+	var var_name : String = ""
+	var erase_var = line_text.erase(0, 3)
+	var var_name_end : int = erase_var.find(":")
+	var_name = erase_var.erase(var_name_end, erase_var.length() - var_name_end).strip_edges()
+	return var_name
+
 func _on_script_changed(script : Script) -> void:
 	_cleanup_current_script()
 	var current_editor = script_editor.get_current_editor()
@@ -78,6 +128,16 @@ func is_variable(selected_text : String) -> Array:
 		if result:
 			return [true, VARIABLE_REGEX_MAP.find_key(i)]
 	return [false]
+
+func is_variable_declaration(line_text : String) -> bool:
+	if line_text.begins_with(" ") or line_text.begins_with("\t"): return false
+	for i in VARIABLE_DECLARATION_REGEX_MAP.values():
+		var regex = RegEx.new()
+		regex.compile(i)
+		var result = regex.search(line_text)
+		if result:
+			return true
+	return false
 
 func _on_popup_about_to_show() -> void:
 	var current_editor : ScriptEditorBase = script_editor.get_current_editor()
@@ -107,6 +167,17 @@ func _on_popup_about_to_show() -> void:
 			MenuItemType.CREATE_VARIABLE,
 		)
 
+	var line_text : String = get_current_line_text(code_edit)
+	if is_variable_declaration(line_text):
+		var var_type : String = get_variable_declaration_type(line_text)
+		_create_menu_item(
+			"生成 getter setter",
+			code_edit,
+			var_type,
+			MenuItemType.CREATE_VARIABLE_DECLARATION,
+			true
+		)
+
 # FUNC 创建菜单按钮
 func _create_menu_item(item_text: String, code_edit: CodeEdit, type : String, item_type : MenuItemType, has_separator : bool = false) -> void:
 	if has_separator: current_popup.add_separator()
@@ -131,10 +202,8 @@ func replace_selection(code_edit: CodeEdit, new_text: String) -> bool:
 
 func create_local_variable(code_edit: CodeEdit, type : String) -> void:
 	var current_line : int = code_edit.get_caret_line()
-	var line_text : String = code_edit.get_line(current_line)
+	var line_text : String = get_current_line_text(code_edit)
 	var selected_text : String = code_edit.get_selected_text()
-
-	var end_column : int = line_text.length()
 
 	var code_text: String = "\tvar new_value : %s = %s" % [type, selected_text]
 
@@ -143,11 +212,33 @@ func create_local_variable(code_edit: CodeEdit, type : String) -> void:
 	code_edit.select(current_line, 5, current_line, 14)
 	code_edit.add_selection_for_next_occurrence()
 
+func create_global_variable(code_edit: CodeEdit, type : String) -> void:
+	var current_line : int = code_edit.get_caret_line()
+	var line_text : String = get_current_line_text(code_edit)
+	var selected_text : String = code_edit.get_selected_text()
+
+	var code_text: String = "var new_value : %s = %s" % [type, selected_text]
+	var var_line : int = _find_class_and_extends_after(code_edit)
+	replace_selection(code_edit, "new_value")
+	code_edit.insert_line_at(var_line, code_text)
+	code_edit.select(var_line, 4, var_line, 13)
+	code_edit.add_selection_for_next_occurrence()
+
+func create_get_and_set(code_edit: CodeEdit, type : String) -> void:
+	var current_line : int = code_edit.get_caret_line()
+	var line_text : String = code_edit.get_line(current_line)
+
+	var var_name : String = get_var_line_var_name(line_text)
+	var code_text: String = ":\n\tget:\n\t\treturn %s\n\tset(v):\n\t\t%s = v" % [var_name, var_name]
+	code_edit.insert_text(code_text, current_line, line_text.length())
+
 func _on_menu_item_pressed(id: int, code_edit: CodeEdit, type : String):
 	if id == MenuItemType.CREATE_LOCAL_VARIABLE:
 		create_local_variable(code_edit, type)
 	if id == MenuItemType.CREATE_VARIABLE:
-		create_local_variable(code_edit, type)
+		create_global_variable(code_edit, type)
+	if id == MenuItemType.CREATE_VARIABLE_DECLARATION:
+		create_get_and_set(code_edit, type)
 
 # FUNC 清理当前脚本二级窗口连接
 func _cleanup_current_script():
