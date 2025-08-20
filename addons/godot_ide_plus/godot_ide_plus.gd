@@ -8,12 +8,23 @@ var current_popup: PopupMenu
 
 # NOTE 菜单按钮类型 id 枚举
 enum MenuItemType {
-	CREATE_LOCAL_VARIABLE = 999,
-	CREATE_VARIABLE = 1111,
-	CREATE_VARIABLE_DECLARATION = 2222,
-	CREATE_SIGNAL_FUNCTION = 3333,
-	CREATE_SIGNAL = 4444,
+	# 从值提取 local 变量
+	CREATE_LOCAL_VARIABLE_FROM_VALUE = 111,
+	# 从值提取 成员 变量
+	CREATE_VARIABLE_FROM_VALUE = 222,
+	# 创建变量声明
+	CREATE_VARIABLE_GET_AND_SET = 333,
+	# 生成信号方法
+	CREATE_SIGNAL_FUNCTION = 444,
+	# 生成信号声明
+	CREATE_SIGNAL = 555,
+	# 生成成员变量声明
+	CREATE_VARIABLE = 666,
+	# 生成临时变量声明
+	CREATE_LOCAL_VARIABLE = 777,
 }
+
+const VARIABLE_NAME : String = "^[\\p{L}_][\\p{L}\\p{N}_]*$"
 
 # NOTE 声明方式正则表达式映射表
 const VARIABLE_DECLARATION_REGEX_MAP : Dictionary = {
@@ -166,6 +177,13 @@ func is_siganl_emit(line_text : String) -> Array:
 		return [true, signal_name]
 	return [false]
 
+# FUNC 当前行是否满足变量名格式
+func is_var_name(selected_text : String) -> bool:
+	var regex = RegEx.new()
+	regex.compile(VARIABLE_NAME)
+	var result = regex.search(selected_text)
+	if result: return true
+	return false
 
 # FUNC Popup Menu 显示时信号
 func _on_popup_about_to_show() -> void:
@@ -176,6 +194,7 @@ func _on_popup_about_to_show() -> void:
 	if not code_edit: return
 
 	var selected_text = _get_selected_text(code_edit)
+	var line_text : String = get_current_line_text(code_edit)
 	if selected_text.is_empty(): return
 
 	var current_line = get_current_line_text(code_edit)
@@ -186,33 +205,14 @@ func _on_popup_about_to_show() -> void:
 			"提取为临时变量",
 			code_edit,
 			is_variables[1],
-			MenuItemType.CREATE_LOCAL_VARIABLE,
+			MenuItemType.CREATE_LOCAL_VARIABLE_FROM_VALUE,
 			true
 		)
 		_create_menu_item(
-			"提取为全局变量",
+			"提取为成员变量",
 			code_edit,
 			is_variables[1],
-			MenuItemType.CREATE_VARIABLE,
-		)
-
-	var line_text : String = get_current_line_text(code_edit)
-	if is_variable_declaration(line_text):
-		var var_type : String = get_variable_declaration_type(line_text)
-		_create_menu_item(
-			"生成 getter setter",
-			code_edit,
-			var_type,
-			MenuItemType.CREATE_VARIABLE_DECLARATION,
-			true
-		)
-	if is_connect_signal_func(line_text, selected_text):
-		_create_menu_item(
-			"生成信号连接方法",
-			code_edit,
-			"none",
-			MenuItemType.CREATE_SIGNAL_FUNCTION,
-			true
+			MenuItemType.CREATE_VARIABLE_FROM_VALUE,
 		)
 	# NOTE 信号发射判断
 	var is_signal_emit_arr : Array = is_siganl_emit(line_text)
@@ -224,6 +224,38 @@ func _on_popup_about_to_show() -> void:
 			MenuItemType.CREATE_SIGNAL,
 			true
 		)
+	elif is_connect_signal_func(line_text, selected_text):
+		_create_menu_item(
+			"生成信号连接方法",
+			code_edit,
+			"none",
+			MenuItemType.CREATE_SIGNAL_FUNCTION,
+			true
+		)
+	elif is_variable_declaration(line_text):
+		var var_type : String = get_variable_declaration_type(line_text)
+		_create_menu_item(
+			"生成 getter setter",
+			code_edit,
+			var_type,
+			MenuItemType.CREATE_VARIABLE_GET_AND_SET,
+			true
+		)
+	else :
+		if is_var_name(selected_text):
+			_create_menu_item(
+				"生成成员变量",
+				code_edit,
+				selected_text,
+				MenuItemType.CREATE_VARIABLE,
+				true
+			)
+			_create_menu_item(
+				"生成临时变量",
+				code_edit,
+				selected_text,
+				MenuItemType.CREATE_LOCAL_VARIABLE,
+			)
 
 # FUNC 创建菜单按钮
 func _create_menu_item(item_text: String, code_edit: CodeEdit, type : String, item_type : MenuItemType, has_separator : bool = false) -> void:
@@ -256,10 +288,10 @@ func create_local_variable(code_edit: CodeEdit, type : String) -> void:
 
 	var code_text: String = "\tvar new_value : %s = %s" % [type, selected_text]
 
-	replace_selection(code_edit, "new_value")
-	code_edit.insert_line_at(current_line, code_text)
-	code_edit.select(current_line, 5, current_line, 14)
-	code_edit.add_selection_for_next_occurrence()
+	if replace_selection(code_edit, "new_value"):
+		code_edit.insert_line_at(current_line, code_text)
+		code_edit.select(current_line, 5, current_line, 14)
+		code_edit.add_selection_for_next_occurrence()
 
 # FUNC 将值提取为全局变量
 func create_global_variable(code_edit: CodeEdit, type : String) -> void:
@@ -269,10 +301,10 @@ func create_global_variable(code_edit: CodeEdit, type : String) -> void:
 
 	var code_text: String = "var new_value : %s = %s" % [type, selected_text]
 	var var_line : int = _find_class_and_extends_after(code_edit)
-	replace_selection(code_edit, "new_value")
-	code_edit.insert_line_at(var_line, code_text)
-	code_edit.select(var_line, 4, var_line, 13)
-	code_edit.add_selection_for_next_occurrence()
+	if replace_selection(code_edit, "new_value"):
+		code_edit.insert_line_at(var_line, code_text)
+		code_edit.select(var_line, 4, var_line, 13)
+		code_edit.add_selection_for_next_occurrence()
 
 # FUNC 生成当前行变量声明的 get set
 func create_get_and_set(code_edit: CodeEdit, type : String) -> void:
@@ -295,18 +327,38 @@ func create_signal(code_edit : CodeEdit, type : String) -> void:
 	var var_line : int = _find_class_and_extends_after(code_edit)
 	code_edit.insert_line_at(var_line, code_text)
 
+# FUNC 生成变量声明
+func create_var_declaration(code_edit : CodeEdit, type : String) -> void:
+	var code_text: String = "var %s : Variant" % [type]
+	var var_line : int = _find_class_and_extends_after(code_edit)
+	code_edit.insert_line_at(var_line, code_text)
+	var current_line_length : int = code_edit.get_line(var_line).length()
+	code_edit.select(var_line, current_line_length - 7, var_line, current_line_length)
+
+# FUNC 生成临时变量声明
+func create_local_var_declaration(code_edit : CodeEdit, type : String) -> void:
+	var current_line : int = code_edit.get_caret_line()
+	var code_text: String = "\tvar %s : Variant" % [type]
+	code_edit.insert_line_at(current_line, code_text)
+	var current_line_length : int = code_edit.get_line(current_line).length()
+	code_edit.select(current_line, current_line_length - 7, current_line, current_line_length)
+
 # FUNC 当 Popup Menu 中的 item 被点击时的方法
 func _on_menu_item_pressed(id: int, code_edit: CodeEdit, type : String):
-	if id == MenuItemType.CREATE_LOCAL_VARIABLE:
+	if id == MenuItemType.CREATE_LOCAL_VARIABLE_FROM_VALUE:
 		create_local_variable(code_edit, type)
-	if id == MenuItemType.CREATE_VARIABLE:
+	if id == MenuItemType.CREATE_VARIABLE_FROM_VALUE:
 		create_global_variable(code_edit, type)
-	if id == MenuItemType.CREATE_VARIABLE_DECLARATION:
+	if id == MenuItemType.CREATE_VARIABLE_GET_AND_SET:
 		create_get_and_set(code_edit, type)
 	if id == MenuItemType.CREATE_SIGNAL_FUNCTION:
 		create_signal_function(code_edit)
 	if id == MenuItemType.CREATE_SIGNAL:
 		create_signal(code_edit, type)
+	if id == MenuItemType.CREATE_VARIABLE:
+		create_var_declaration(code_edit, type)
+	if id == MenuItemType.CREATE_LOCAL_VARIABLE:
+		create_local_var_declaration(code_edit, type)
 
 # FUNC 清理当前脚本二级窗口连接
 func _cleanup_current_script():
