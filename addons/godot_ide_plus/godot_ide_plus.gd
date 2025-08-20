@@ -1,32 +1,35 @@
 @tool
 extends EditorPlugin
 
+# NOTE 代码编辑器
 var script_editor: ScriptEditor
+# NOTE 当前的 PopupMenu
 var current_popup: PopupMenu
 
+# NOTE 菜单按钮类型 id 枚举
 enum MenuItemType {
 	CREATE_LOCAL_VARIABLE = 999,
 	CREATE_VARIABLE = 1111,
 	CREATE_VARIABLE_DECLARATION = 2222,
+	CREATE_SIGNAL_FUNCTION = 3333,
+	CREATE_SIGNAL = 4444,
 }
+
+# NOTE 声明方式正则表达式映射表
 const VARIABLE_DECLARATION_REGEX_MAP : Dictionary = {
 	# 基本变量声明 (var a)
 	"1": r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)",
-
 	# 带类型注解 (var a : int)
 	"2": r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)",
-
 	# 带赋值 (var a = 1)
 	"3": r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(\S+)",
-
 	# 完整声明 (var a : int = 1)
 	"4": r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(\S+)",
-
 	# 短变量声明 (var a := 1)
 	"5": r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:=\s*(\S+)"
 }
 
-# Godot 变量类型正则表达式映射表
+# NOTE 变量类型正则表达式映射表
 const VARIABLE_REGEX_MAP: Dictionary = {
 	# 基础标量类型
 	"null": "^null$",
@@ -34,22 +37,22 @@ const VARIABLE_REGEX_MAP: Dictionary = {
 	"int": "^-?\\d+$",
 	"float": "^-?(\\d+\\.\\d*|\\.\\d+|\\d+)([eE][-+]?\\d+)?$",
 	"String": '^"(?:[^"\\\\]|\\\\["\\\\tnr])*"$',  # 支持完整转义序列
-
 	# 集合类型
 	"Array": "^\\[\\s*(?:[^\\[\\]]*(?:\\[[^\\[\\]]*\\][^\\[\\]]*)*)?\\s*\\]$",
 	"Dictionary": "^\\{\\s*(?:(?:\"(?:[^\"\\\\]|\\\\[\"\\\\tnr])*\"\\s*:\\s*[^,{}]*(?:,(?!\\s*[\\]}])|(?=\\s*\\})))\\s*)*\\}$",
-
 	# 向量/数学类型
 	"Vector2": "^Vector2\\(\\s*-?\\d*\\.?\\d+\\s*,\\s*-?\\d*\\.?\\d+\\s*\\)$",
 	"Vector3": "^Vector3\\(\\s*-?\\d*\\.?\\d+\\s*,\\s*-?\\d*\\.?\\d+\\s*,\\s*-?\\d*\\.?\\d+\\s*\\)$",
 	"Color": "^Color\\(\\s*\\d*\\.?\\d+\\s*,\\s*\\d*\\.?\\d+\\s*,\\s*\\d*\\.?\\d+\\s*(?:,\\s*\\d*\\.?\\d+\\s*)?\\)$",
 	"Rect2": "^Rect2\\(\\s*-?\\d*\\.?\\d+\\s*,\\s*-?\\d*\\.?\\d+\\s*,\\s*-?\\d*\\.?\\d+\\s*,\\s*-?\\d*\\.?\\d+\\s*\\)$",
-
 	# 引擎对象类型
 	"NodePath": "^NodePath\\(\\s*\"(?:[^\"\\\\]|\\\\[\"\\\\tnr])*\"\\s*\\)$",
 	"rid": "^RID\\(\\s*\\)$",  # RID 使用空构造函数
 	"StringName": "^StringName\\(\\s*\"(?:[^\"\\\\]|\\\\[\"\\\\tnr])*\"\\s*\\)$"
 }
+
+# NOTE 信号连接方法名称正则表达式
+const ON_METHOD_REGEX_STR = "^_on_[a-zA-Z0-9]+(?:_[a-zA-Z0-9]+)*$"
 
 func _enter_tree() -> void:
 	script_editor = EditorInterface.get_script_editor()
@@ -77,6 +80,7 @@ func _find_popup_menu(node: Node) -> PopupMenu:
 		if result: return result
 	return null
 
+# FUNC 查找类名声明和继承声明的下一行
 func _find_class_and_extends_after(code_edit: CodeEdit) -> int:
 	var scripts := code_edit.text.split("\n")
 	for i : int in scripts.size():
@@ -89,6 +93,7 @@ func _find_class_and_extends_after(code_edit: CodeEdit) -> int:
 			return i + 1
 	return 0
 
+# FUNC 获取变量声明中的变量类型
 func get_variable_declaration_type(line_text : String) -> String:
 	if not line_text.contains(":"): return "Variant"
 	if line_text.contains("="):
@@ -102,6 +107,7 @@ func get_variable_declaration_type(line_text : String) -> String:
 	var type_string : String = line_text.erase(0, value_start_index + 1).strip_edges()
 	return type_string
 
+# FUNC 获取变量声明中的变量名称
 func get_var_line_var_name(line_text : String) -> String:
 	var var_name : String = ""
 	var erase_var = line_text.erase(0, 3)
@@ -129,6 +135,7 @@ func is_variable(selected_text : String) -> Array:
 			return [true, VARIABLE_REGEX_MAP.find_key(i)]
 	return [false]
 
+# FUNC 文本是否符合变量声明的格式
 func is_variable_declaration(line_text : String) -> bool:
 	if line_text.begins_with(" ") or line_text.begins_with("\t"): return false
 	for i in VARIABLE_DECLARATION_REGEX_MAP.values():
@@ -139,6 +146,28 @@ func is_variable_declaration(line_text : String) -> bool:
 			return true
 	return false
 
+# FUNC 当前行是否满足信号连接
+func is_connect_signal_func(line_text : String, selected_text : String) -> bool:
+	if not line_text.contains("connect"): return false
+	var regex = RegEx.new()
+	regex.compile(ON_METHOD_REGEX_STR)
+	var result = regex.search(selected_text)
+	if result:
+		return true
+	return false
+
+# FUNC 当前行是否满足信号发射格式
+func is_siganl_emit(line_text : String) -> Array:
+	if line_text.contains(".emit"):
+		var emit_start_index : int = line_text.find(".emit")
+		var signal_name : String = line_text\
+			.erase(emit_start_index, line_text.length() - emit_start_index)\
+			.strip_edges()
+		return [true, signal_name]
+	return [false]
+
+
+# FUNC Popup Menu 显示时信号
 func _on_popup_about_to_show() -> void:
 	var current_editor : ScriptEditorBase = script_editor.get_current_editor()
 	if not current_editor: return
@@ -177,6 +206,24 @@ func _on_popup_about_to_show() -> void:
 			MenuItemType.CREATE_VARIABLE_DECLARATION,
 			true
 		)
+	if is_connect_signal_func(line_text, selected_text):
+		_create_menu_item(
+			"生成信号连接方法",
+			code_edit,
+			"none",
+			MenuItemType.CREATE_SIGNAL_FUNCTION,
+			true
+		)
+	# NOTE 信号发射判断
+	var is_signal_emit_arr : Array = is_siganl_emit(line_text)
+	if is_signal_emit_arr[0]:
+		_create_menu_item(
+			"生成信号",
+			code_edit,
+			is_signal_emit_arr[1],
+			MenuItemType.CREATE_SIGNAL,
+			true
+		)
 
 # FUNC 创建菜单按钮
 func _create_menu_item(item_text: String, code_edit: CodeEdit, type : String, item_type : MenuItemType, has_separator : bool = false) -> void:
@@ -187,6 +234,7 @@ func _create_menu_item(item_text: String, code_edit: CodeEdit, type : String, it
 		current_popup.disconnect("id_pressed", _on_menu_item_pressed)
 	current_popup.connect("id_pressed", _on_menu_item_pressed.bind(code_edit, type))
 
+# FUNC 替换选中的代码片段
 func replace_selection(code_edit: CodeEdit, new_text: String) -> bool:
 	var current_line : int = code_edit.get_caret_line()
 	var selection_start = code_edit.get_selection_origin_column()
@@ -200,6 +248,7 @@ func replace_selection(code_edit: CodeEdit, new_text: String) -> bool:
 	code_edit.insert_text(new_text, selection_start_line, selection_start)
 	return true
 
+# FUNC 将值提取为临时变量
 func create_local_variable(code_edit: CodeEdit, type : String) -> void:
 	var current_line : int = code_edit.get_caret_line()
 	var line_text : String = get_current_line_text(code_edit)
@@ -212,6 +261,7 @@ func create_local_variable(code_edit: CodeEdit, type : String) -> void:
 	code_edit.select(current_line, 5, current_line, 14)
 	code_edit.add_selection_for_next_occurrence()
 
+# FUNC 将值提取为全局变量
 func create_global_variable(code_edit: CodeEdit, type : String) -> void:
 	var current_line : int = code_edit.get_caret_line()
 	var line_text : String = get_current_line_text(code_edit)
@@ -224,6 +274,7 @@ func create_global_variable(code_edit: CodeEdit, type : String) -> void:
 	code_edit.select(var_line, 4, var_line, 13)
 	code_edit.add_selection_for_next_occurrence()
 
+# FUNC 生成当前行变量声明的 get set
 func create_get_and_set(code_edit: CodeEdit, type : String) -> void:
 	var current_line : int = code_edit.get_caret_line()
 	var line_text : String = code_edit.get_line(current_line)
@@ -232,6 +283,19 @@ func create_get_and_set(code_edit: CodeEdit, type : String) -> void:
 	var code_text: String = ":\n\tget:\n\t\treturn %s\n\tset(v):\n\t\t%s = v" % [var_name, var_name]
 	code_edit.insert_text(code_text, current_line, line_text.length())
 
+# FUNC 生成当前信号连接的方法
+func create_signal_function(code_edit: CodeEdit) -> void:
+	var selected_text = _get_selected_text(code_edit)
+	var code_text: String = "func %s() -> void:\n\tpass" % [selected_text]
+	code_edit.insert_line_at(code_edit.get_line_count() - 1, code_text)
+
+# FUNC 生成信号
+func create_signal(code_edit : CodeEdit, type : String) -> void:
+	var code_text: String = "signal %s()" % [type]
+	var var_line : int = _find_class_and_extends_after(code_edit)
+	code_edit.insert_line_at(var_line, code_text)
+
+# FUNC 当 Popup Menu 中的 item 被点击时的方法
 func _on_menu_item_pressed(id: int, code_edit: CodeEdit, type : String):
 	if id == MenuItemType.CREATE_LOCAL_VARIABLE:
 		create_local_variable(code_edit, type)
@@ -239,6 +303,10 @@ func _on_menu_item_pressed(id: int, code_edit: CodeEdit, type : String):
 		create_global_variable(code_edit, type)
 	if id == MenuItemType.CREATE_VARIABLE_DECLARATION:
 		create_get_and_set(code_edit, type)
+	if id == MenuItemType.CREATE_SIGNAL_FUNCTION:
+		create_signal_function(code_edit)
+	if id == MenuItemType.CREATE_SIGNAL:
+		create_signal(code_edit, type)
 
 # FUNC 清理当前脚本二级窗口连接
 func _cleanup_current_script():
@@ -268,7 +336,7 @@ func get_word_under_cursor(code_edit: CodeEdit) -> String:
 
 # FUNC 获取选择的字段
 func _get_selected_text(_code_edit: CodeEdit) -> String:
-	var selected_text = _code_edit.get_selected_text().strip_edges()
+	var selected_text : String = _code_edit.get_selected_text().strip_edges()
 	if selected_text.is_empty():
 		selected_text = get_word_under_cursor(_code_edit)
 	return selected_text
