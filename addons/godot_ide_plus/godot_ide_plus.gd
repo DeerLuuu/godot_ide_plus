@@ -1,6 +1,13 @@
 @tool
 extends EditorPlugin
 
+var snippets = {
+	"forloop": "for i in range:\n\t\tpass",
+	"varc": "var new_var : Variant"
+}
+
+var code_edit : CodeEdit
+
 # NOTE 代码编辑器
 var script_editor: ScriptEditor
 # NOTE 当前的 PopupMenu
@@ -22,6 +29,8 @@ enum MenuItemType {
 	CREATE_VARIABLE = 666,
 	# 生成临时变量声明
 	CREATE_LOCAL_VARIABLE = 777,
+	# 从代码块中提取成员方法
+	CREATE_FUNCTION_FROM_CODE_BLOCK = 888,
 }
 
 const VARIABLE_NAME : String = "^[\\p{L}_][\\p{L}\\p{N}_]*$"
@@ -65,10 +74,23 @@ const VARIABLE_REGEX_MAP: Dictionary = {
 # NOTE 信号连接方法名称正则表达式
 const ON_METHOD_REGEX_STR = "^_on_[a-zA-Z0-9]+(?:_[a-zA-Z0-9]+)*$"
 
+
 func _enter_tree() -> void:
 	script_editor = EditorInterface.get_script_editor()
 	script_editor.editor_script_changed.connect(_on_script_changed)
 	script_editor.editor_script_changed.emit(script_editor.get_current_script())
+
+func _on_request_completion():
+	var prefix = _get_selected_text(code_edit)
+	for keyword in snippets:
+		if keyword.begins_with(prefix):
+			# 添加自定义补全项
+			code_edit.add_code_completion_option(
+				CodeEdit.KIND_FUNCTION,
+				keyword,
+				snippets[keyword],
+				Color.AQUA
+				)
 
 func _exit_tree() -> void:
 	if script_editor and script_editor.is_connected("editor_script_changed", _on_script_changed):
@@ -127,6 +149,14 @@ func get_var_line_var_name(line_text : String) -> String:
 	return var_name
 
 func _on_script_changed(script : Script) -> void:
+	code_edit = _find_code_edit(script_editor.get_current_editor())
+	if code_edit is CodeEdit:
+		# 移除旧监听，避免重复绑定
+		if code_edit.code_completion_requested.is_connected(_on_request_completion):
+			code_edit.code_completion_requested.disconnect(_on_request_completion)
+		# 连接新编辑器
+		code_edit.code_completion_requested.connect(_on_request_completion)
+
 	_cleanup_current_script()
 	var current_editor = script_editor.get_current_editor()
 	if not current_editor: return
@@ -135,6 +165,8 @@ func _on_script_changed(script : Script) -> void:
 	current_popup = _find_popup_menu(current_editor)
 	if not current_popup: return
 	current_popup.connect("about_to_popup", _on_popup_about_to_show)
+
+
 
 # FUNC 文本是否符合变量值的格式
 func is_variable(selected_text : String) -> Array:
@@ -185,6 +217,18 @@ func is_var_name(selected_text : String) -> bool:
 	if result: return true
 	return false
 
+# FUNC 当前选中的行是否满足代码块格式
+func is_scrpit_block(code_edit : CodeEdit) -> Array:
+	var code_start_line : int = code_edit.get_selection_from_line() + 1
+	var code_end_line : int = code_edit.get_selection_to_line() + 1
+	#print("起始：%s，结束：%s" % [code_start_line, code_end_line])
+	for i in range(code_start_line, code_end_line):
+		#print("%s:%s" % [i - 1, code_edit.get_line(i)])
+		if code_edit.get_line(i - 1).is_empty(): continue
+		if not code_edit.get_line(i - 1).begins_with("\t"):
+			return [false]
+	return [true, code_start_line, code_end_line]
+
 # FUNC Popup Menu 显示时信号
 func _on_popup_about_to_show() -> void:
 	var current_editor : ScriptEditorBase = script_editor.get_current_editor()
@@ -197,21 +241,29 @@ func _on_popup_about_to_show() -> void:
 	var line_text : String = get_current_line_text(code_edit)
 	if selected_text.is_empty(): return
 
-	var current_line = get_current_line_text(code_edit)
+	var is_script_block_arr : Array = is_scrpit_block(code_edit)
+	if is_script_block_arr.pop_at(0):
+		_create_menu_item(
+			"提取为成员方法",
+			code_edit,
+			is_script_block_arr,
+			MenuItemType.CREATE_FUNCTION_FROM_CODE_BLOCK,
+			true
+		)
 
 	var is_variables : Array = is_variable(selected_text)
 	if is_variables[0]:
 		_create_menu_item(
 			"提取为临时变量",
 			code_edit,
-			is_variables[1],
+			[is_variables[1]],
 			MenuItemType.CREATE_LOCAL_VARIABLE_FROM_VALUE,
 			true
 		)
 		_create_menu_item(
 			"提取为成员变量",
 			code_edit,
-			is_variables[1],
+			[is_variables[1]],
 			MenuItemType.CREATE_VARIABLE_FROM_VALUE,
 		)
 	# NOTE 信号发射判断
@@ -220,7 +272,7 @@ func _on_popup_about_to_show() -> void:
 		_create_menu_item(
 			"生成信号",
 			code_edit,
-			is_signal_emit_arr[1],
+			[is_signal_emit_arr[1]],
 			MenuItemType.CREATE_SIGNAL,
 			true
 		)
@@ -228,7 +280,7 @@ func _on_popup_about_to_show() -> void:
 		_create_menu_item(
 			"生成信号连接方法",
 			code_edit,
-			"none",
+			[],
 			MenuItemType.CREATE_SIGNAL_FUNCTION,
 			true
 		)
@@ -237,7 +289,7 @@ func _on_popup_about_to_show() -> void:
 		_create_menu_item(
 			"生成 getter setter",
 			code_edit,
-			var_type,
+			[var_type],
 			MenuItemType.CREATE_VARIABLE_GET_AND_SET,
 			true
 		)
@@ -246,34 +298,38 @@ func _on_popup_about_to_show() -> void:
 			_create_menu_item(
 				"生成成员变量",
 				code_edit,
-				selected_text,
+				[selected_text],
 				MenuItemType.CREATE_VARIABLE,
 				true
 			)
 			_create_menu_item(
 				"生成临时变量",
 				code_edit,
-				selected_text,
+				[selected_text],
 				MenuItemType.CREATE_LOCAL_VARIABLE,
 			)
 
 # FUNC 创建菜单按钮
-func _create_menu_item(item_text: String, code_edit: CodeEdit, type : String, item_type : MenuItemType, has_separator : bool = false) -> void:
+func _create_menu_item(item_text: String, code_edit: CodeEdit, data : Array, item_type : MenuItemType, has_separator : bool = false) -> void:
 	if has_separator: current_popup.add_separator()
 	current_popup.add_item(item_text, item_type)
 
 	if current_popup.is_connected("id_pressed", _on_menu_item_pressed):
 		current_popup.disconnect("id_pressed", _on_menu_item_pressed)
-	current_popup.connect("id_pressed", _on_menu_item_pressed.bind(code_edit, type))
+	current_popup.connect("id_pressed", _on_menu_item_pressed.bind(code_edit, data))
 
 # FUNC 替换选中的代码片段
-func replace_selection(code_edit: CodeEdit, new_text: String) -> bool:
+func replace_selection(code_edit: CodeEdit, new_text: String, line_mode : bool = false) -> bool:
 	var current_line : int = code_edit.get_caret_line()
 	var selection_start = code_edit.get_selection_origin_column()
 	var selection_end = code_edit.get_selection_to_column()
-	var selection_start_line = code_edit.get_selection_origin_line()
+	var selection_start_line = code_edit.get_selection_from_line()
 	var selection_end_line = code_edit.get_selection_to_line()
 	# 检查是否有选中内容
+	if line_mode:
+		code_edit.remove_text(selection_start_line, 0, selection_end_line, selection_end)
+		code_edit.insert_text(new_text, selection_start_line, 0)
+		return true
 	if selection_start == selection_end and selection_start_line == selection_end_line:
 		return false
 	code_edit.remove_text(selection_start_line, selection_start, selection_end_line, selection_end)
@@ -343,22 +399,47 @@ func create_local_var_declaration(code_edit : CodeEdit, type : String) -> void:
 	var current_line_length : int = code_edit.get_line(current_line).length()
 	code_edit.select(current_line, current_line_length - 7, current_line, current_line_length)
 
+# TODO 后续进一步判断脚本中或者代码块本身是否有代码块中的变量声明，如没有创建为参数
+# FUNC 将代码块提取为成员方法
+func create_function_from_code_block(code_edit : CodeEdit, data : Array) -> void:
+	var current_line : int = code_edit.get_caret_line()
+	var code_block : String = ""
+	for i in range(data[0], data[1] + 1):
+		if i == data[0]:
+			code_block = code_edit.get_line(i - 1)
+			continue
+		code_block += "\n" + code_edit.get_line(i - 1)
+	#print("成员方法提取成功\ndata:%s" % code_block)
+	var code_text : String = "func new_func_name() -> void:\n%s" % [code_block]
+	var code_line : int = code_edit.get_line_count() - 1
+	if replace_selection(code_edit, "\tnew_func_name()", true):
+		code_edit.insert_line_at(code_edit.get_line_count() - 1, code_text)
+		code_edit.select(
+				current_line,
+				1,
+				current_line,
+				14
+			)
+		code_edit.add_selection_for_next_occurrence()
+
 # FUNC 当 Popup Menu 中的 item 被点击时的方法
-func _on_menu_item_pressed(id: int, code_edit: CodeEdit, type : String):
+func _on_menu_item_pressed(id: int, code_edit: CodeEdit, data : Array):
 	if id == MenuItemType.CREATE_LOCAL_VARIABLE_FROM_VALUE:
-		create_local_variable(code_edit, type)
+		create_local_variable(code_edit, data[0])
 	if id == MenuItemType.CREATE_VARIABLE_FROM_VALUE:
-		create_global_variable(code_edit, type)
+		create_global_variable(code_edit, data[0])
 	if id == MenuItemType.CREATE_VARIABLE_GET_AND_SET:
-		create_get_and_set(code_edit, type)
+		create_get_and_set(code_edit, data[0])
 	if id == MenuItemType.CREATE_SIGNAL_FUNCTION:
 		create_signal_function(code_edit)
 	if id == MenuItemType.CREATE_SIGNAL:
-		create_signal(code_edit, type)
+		create_signal(code_edit, data[0])
 	if id == MenuItemType.CREATE_VARIABLE:
-		create_var_declaration(code_edit, type)
+		create_var_declaration(code_edit, data[0])
 	if id == MenuItemType.CREATE_LOCAL_VARIABLE:
-		create_local_var_declaration(code_edit, type)
+		create_local_var_declaration(code_edit, data[0])
+	if id == MenuItemType.CREATE_FUNCTION_FROM_CODE_BLOCK:
+		create_function_from_code_block(code_edit, data)
 
 # FUNC 清理当前脚本二级窗口连接
 func _cleanup_current_script():
