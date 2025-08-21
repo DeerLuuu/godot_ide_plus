@@ -135,6 +135,24 @@ func get_var_line_var_name(line_text : String) -> String:
 	var_name = erase_var.erase(var_name_end, erase_var.length() - var_name_end).strip_edges()
 	return var_name
 
+# FUNC 获取当前行的所有变量名称
+func get_line_all_var(line_text : String) -> Array:
+	if line_text.begins_with("\t#"): return []
+	var tokens := []
+	for t : String in line_text.split(" "):
+		if t in ["+", "-", "*", "/", "%", "=", ":", ":="]: continue
+		if t.strip_edges() == "var": continue
+		if t in VARIABLE_REGEX_MAP.keys(): continue
+		if t.contains("#"): break
+		if t.is_valid_int() or t.is_valid_float() or t.contains("\""): continue
+		if t.strip_edges() in tokens: continue
+		if t.begins_with(":"): continue
+		if t.ends_with(":"):
+			tokens.append(t.remove_chars(":"))
+			continue
+		tokens.append(t.strip_edges())
+	return tokens
+
 func _on_script_changed(script : Script) -> void:
 	update_code_block_dic()
 	_cleanup_current_script()
@@ -218,6 +236,9 @@ func is_var_name(selected_text : String) -> bool:
 func is_scrpit_block(code_edit : CodeEdit) -> Array:
 	var code_start_line : int = code_edit.get_selection_from_line() + 1
 	var code_end_line : int = code_edit.get_selection_to_line() + 1
+	if code_start_line == code_end_line\
+	and code_edit.get_selection_from_column() == code_edit.get_selection_to_column():
+		return [false]
 	#print("起始：%s，结束：%s" % [code_start_line, code_end_line])
 	for i in range(code_start_line, code_end_line):
 		#print("%s:%s" % [i - 1, code_edit.get_line(i)])
@@ -237,7 +258,7 @@ func _on_popup_about_to_show() -> void:
 	var selected_text = _get_selected_text(code_edit)
 	var line_text : String = get_current_line_text(code_edit)
 	if selected_text.is_empty(): return
-
+	if line_text.strip_edges().begins_with("#"): return
 	var var_name_arr : Array[String] = get_current_script_vars(code_edit)
 	var is_script_block_arr : Array = is_scrpit_block(code_edit)
 	if is_script_block_arr.pop_at(0):
@@ -406,25 +427,32 @@ func create_function_from_code_block(code_edit : CodeEdit, data : Array) -> void
 	var code_block : String = ""
 	var get_local_vars : Array = []
 	var parameters : Array = []
+	var var_name_arr : Array[String] = get_current_script_vars(code_edit)
 	for i in range(data[0], data[1] + 1):
 		var line_text : String = code_edit.get_line(i - 1)
 		if line_text.contains("var"):
 			get_local_vars.append(get_var_line_var_name(line_text))
+		for var_parameter in get_line_all_var(line_text):
+			if var_parameter in parameters: continue
+			parameters.append(var_parameter)
+		for parameter in get_local_vars:
+			if parameter in parameters: parameters.erase(parameter)
+		for parameter in var_name_arr:
+			if parameter in var_name_arr: parameters.erase(parameter)
 		if i == data[0]:
 			code_block = line_text
 			continue
 		code_block += "\n" + line_text
 	#print("成员方法提取成功\ndata:%s" % code_block)
-	var parameter : String = ""
-	for i in get_local_vars.size():
+	var parameter_str : String = ""
+	for i in parameters.size():
 		if i == 0:
-			parameter = get_local_vars[i]
+			parameter_str = parameters[i]
 			continue
-		parameter += ", " + get_local_vars[i]
-	parameter.erase(parameter.length() - 3, 2)
-	# WARNING 这里还需要获取到所有的变量，然后排除掉临时变量和成员变量
-	print("当前方法中的参数%s" % parameter)
-	var code_text : String = "func new_func_name() -> void:\n%s" % [code_block]
+		parameter_str += ", " + parameters[i]
+	parameter_str.erase(parameter_str.length() - 3, 2)
+	print("当前方法中的参数%s" % parameter_str)
+	var code_text : String = "func new_func_name(%s) -> void:\n%s" % [parameter_str, code_block]
 	var code_line : int = code_edit.get_line_count() - 1
 	if replace_selection(code_edit, "\tnew_func_name()", true):
 		code_edit.insert_line_at(code_edit.get_line_count() - 1, code_text)
