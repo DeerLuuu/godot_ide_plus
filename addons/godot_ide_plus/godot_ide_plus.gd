@@ -1,7 +1,6 @@
 @tool
 extends EditorPlugin
 
-var snippets : Dictionary
 var all_data : Dictionary[MenuItemType, Array] = {}
 # NOTE 代码编辑器
 var script_editor: ScriptEditor
@@ -30,6 +29,7 @@ enum MenuItemType {
 	CREATE_FUNCTION_PARAMETER_FROM_LOCAL_VARIABLE = 999,
 }
 
+# NOTE 变量名
 const VARIABLE_NAME : String = "^[\\p{L}_][\\p{L}\\p{N}_]*$"
 
 # NOTE 声明方式正则表达式映射表
@@ -72,7 +72,6 @@ const VARIABLE_REGEX_MAP: Dictionary = {
 const ON_METHOD_REGEX_STR = "^_on_[a-zA-Z0-9]+(?:_[a-zA-Z0-9]+)*$"
 
 func _enter_tree() -> void:
-	update_code_block_dic()
 	script_editor = EditorInterface.get_script_editor()
 	script_editor.editor_script_changed.connect(_on_script_changed)
 	script_editor.editor_script_changed.emit(script_editor.get_current_script())
@@ -81,10 +80,6 @@ func _exit_tree() -> void:
 	if script_editor and script_editor.is_connected("editor_script_changed", _on_script_changed):
 		script_editor.disconnect("editor_script_changed", _on_script_changed)
 	_cleanup_current_script()
-
-# FUNC 更新自定义代码片段
-func update_code_block_dic() -> void:
-	snippets = preload("res://custom_codes/my_code.json").data
 
 # FUNC 查找代码编辑器
 func _find_code_edit(node: Node) -> CodeEdit:
@@ -149,6 +144,8 @@ func get_line_all_var(line_text : String) -> Array:
 		if t.is_valid_int() or t.is_valid_float() or t.contains("\""): continue
 		if t.strip_edges() in tokens: continue
 		if t.begins_with(":"): continue
+		if t.contains("connect("): continue
+		if t.contains("emit("): continue
 		if t.ends_with(":"):
 			tokens.append(t.remove_chars(":"))
 			continue
@@ -156,35 +153,15 @@ func get_line_all_var(line_text : String) -> Array:
 	return tokens
 
 func _on_script_changed(script : Script) -> void:
-	update_code_block_dic()
 	_cleanup_current_script()
 	var current_editor = script_editor.get_current_editor()
 	if not current_editor: return
 	var code_edit = _find_code_edit(current_editor)
 	if not code_edit: return
-	# 自定义代码段的补全相关信号链接
-	if code_edit.code_completion_requested.is_connected(_on_code_completion_requested):
-		code_edit.code_completion_requested.disconnect(_on_code_completion_requested)
-	code_edit.code_completion_requested.connect(_on_code_completion_requested.bind(code_edit))
 	# 自定义二级菜单相关信号链接
 	current_popup = _find_popup_menu(current_editor)
 	if not current_popup: return
 	current_popup.about_to_popup.connect(_on_popup_about_to_show)
-
-# FUNC 激活自动补全时的信号方法
-func _on_code_completion_requested(code_edit : CodeEdit):
-	var line_text : String = get_current_line_text(code_edit)
-	if line_text.contains("\"") or line_text.contains("\'"): return
-	var prefix = _get_selected_text(code_edit)
-	for keyword in snippets:
-		if keyword.begins_with(prefix):
-			# 添加自定义补全项
-			code_edit.add_code_completion_option(
-				CodeEdit.KIND_FUNCTION,
-				keyword,
-				snippets[keyword],
-				Color.AQUA
-				)
 
 # FUNC 文本是否符合变量值的格式
 func is_variable(selected_text : String) -> Array:
@@ -207,8 +184,14 @@ func is_variable_declaration(line_text : String) -> bool:
 		if result:
 			return true
 	return false
+
+func is_selection_one_line(code_edit : CodeEdit) -> bool:
+	return code_edit.get_selection_from_line() == code_edit.get_selection_to_line()
+
 # FUNC 文本是否符合变量声明的格式
-func is_local_variable_declaration(line_text : String) -> bool:
+func is_local_variable_declaration(code_edit : CodeEdit, line_text : String) -> bool:
+	if line_text.contains("func "): return false
+	if not is_selection_one_line(code_edit): return false
 	if line_text.strip_edges().begins_with("#"): return false
 	if not line_text.begins_with("\t"): return false
 	if line_text.ends_with(":"): return false
@@ -252,18 +235,15 @@ func is_var_name(selected_text : String) -> bool:
 func is_scrpit_block(code_edit : CodeEdit) -> Array:
 	var code_start_line : int = code_edit.get_selection_from_line() + 1
 	var code_end_line : int = code_edit.get_selection_to_line() + 1
+	if get_current_line_text(code_edit).contains("func "): return [false]
 	if code_start_line == code_end_line\
 	and code_edit.get_selection_from_column() == code_edit.get_selection_to_column():
 		return [false]
-	#print("起始：%s，结束：%s" % [code_start_line, code_end_line])
 	for i in range(code_start_line, code_end_line):
-		#print("%s:%s" % [i - 1, code_edit.get_line(i)])
 		if code_edit.get_line(i - 1).is_empty(): continue
 		if not code_edit.get_line(i - 1).begins_with("\t"):
 			return [false]
 	return [true, code_start_line, code_end_line]
-
-# FUNC 判断是否为临时变量声明
 
 # FUNC Popup Menu 显示时信号
 func _on_popup_about_to_show() -> void:
@@ -277,7 +257,10 @@ func _on_popup_about_to_show() -> void:
 	if selected_text.is_empty(): return
 	var line_text : String = get_current_line_text(code_edit)
 	if line_text.strip_edges().begins_with("#"): return
-	var var_name_arr : Array[String] = get_current_script_vars(code_edit)
+	var var_name_dic : Dictionary = get_current_script_vars(code_edit)
+	var var_name_arr : Array = []
+	for i in var_name_dic["name_and_types"]:
+		var_name_arr.append(i[0])
 	var is_script_block_arr : Array = is_scrpit_block(code_edit)
 	if is_script_block_arr.pop_at(0):
 		_create_menu_item(
@@ -288,15 +271,18 @@ func _on_popup_about_to_show() -> void:
 			true
 		)
 	var is_variables : Array = is_variable(selected_text)
-	if is_local_variable_declaration(line_text):
+	var var_type : String
+	if not line_text.contains("func "):
+		var_type = get_variable_declaration_type(line_text)
+	if is_local_variable_declaration(code_edit, line_text):
 		_create_menu_item(
 			"提取为方法参数",
 			code_edit,
-			[line_text, is_variables[1]],
+			[line_text, var_type],
 			MenuItemType.CREATE_FUNCTION_PARAMETER_FROM_LOCAL_VARIABLE,
 			true
 		)
-	if is_variables[0]:
+	if is_variables[0] and var_type.length() > 0:
 		_create_menu_item(
 			"提取为临时变量",
 			code_edit,
@@ -329,7 +315,6 @@ func _on_popup_about_to_show() -> void:
 			true
 		)
 	elif is_variable_declaration(line_text):
-		var var_type : String = get_variable_declaration_type(line_text)
 		_create_menu_item(
 			"生成 getter setter",
 			code_edit,
@@ -448,15 +433,23 @@ func create_local_var_declaration(code_edit : CodeEdit, type : String) -> void:
 
 # FUNC 将代码块提取为成员方法
 func create_function_from_code_block(code_edit : CodeEdit, data : Array) -> void:
-	var current_line : int = code_edit.get_caret_line()
+	var current_line : int = code_edit.get_selection_from_line()\
+		if code_edit.get_selection_from_line() < code_edit.get_selection_to_line()\
+		else code_edit.get_selection_to_line()
 	var code_block : String = ""
 	var get_local_vars : Array = []
 	var parameters : Array = []
-	var var_name_arr : Array[String] = get_current_script_vars(code_edit)
+	var var_name_dic : Dictionary = get_current_script_vars(code_edit)
+	var var_name_arr : Array = []
+	# 获取全局变量的名字
+	for i in var_name_dic["name_and_types"]:
+		var_name_arr.append(i[0])
 	for i in range(data[0], data[1] + 1):
 		var line_text : String = code_edit.get_line(i - 1)
+		# 获取临时变量的名字
 		if line_text.contains("var"):
 			get_local_vars.append(get_var_line_var_name(line_text))
+		# 得到所有变量名
 		for var_parameter in get_line_all_var(line_text):
 			if var_parameter in parameters: continue
 			parameters.append(var_parameter)
@@ -468,28 +461,19 @@ func create_function_from_code_block(code_edit : CodeEdit, data : Array) -> void
 			code_block = line_text
 			continue
 		code_block += "\n" + line_text
-	#print("成员方法提取成功\ndata:%s" % code_block)
 	var parameter_str : String = ""
 	for i in parameters.size():
 		if i == 0:
 			parameter_str = parameters[i]
 			continue
 		parameter_str += ", " + parameters[i]
-	parameter_str.erase(parameter_str.length() - 3, 2)
-	print("当前方法中的参数%s" % parameter_str)
 	var code_text : String = "func new_func_name(%s) -> void:\n%s" % [parameter_str, code_block]
 	var code_line : int = code_edit.get_line_count() - 1
 	if replace_selection(code_edit, "\tnew_func_name()", true):
 		code_edit.insert_line_at(code_edit.get_line_count() - 1, code_text)
-		code_edit.select(
-				current_line,
-				1,
-				current_line,
-				14
-			)
+		code_edit.select(current_line, 1, current_line, 14)
 		code_edit.add_selection_for_next_occurrence()
 
-# WARNING 记得修复，类型获取单独写一个方法出来获取，而不是现在拿别人的类型获取
 # FUNC 将临时变量提取为方法的参数
 func create_function_parameter_from_local_variable(code_edit : CodeEdit, data : Array) -> void:
 	var line_text : String = data[0]
@@ -504,13 +488,15 @@ func create_function_parameter_from_local_variable(code_edit : CodeEdit, data : 
 	var insert_index : int = func_line_text.find(")")
 
 	var parameter_value : Variant = null
-	if func_line_text.find("(") + 1 != insert_index:
-		parameter_value = line_text.erase(0, line_text.find("=") + 1).strip_edges()
-		code_edit.insert_text(", %s : %s = %s" % [parameter, parameter_type, parameter_value], func_line, insert_index)
-		return
 	if line_text.contains("="):
 		parameter_value = line_text.erase(0, line_text.find("=") + 1).strip_edges()
+		if func_line_text.find("(") + 1 != insert_index:
+			code_edit.insert_text(", %s : %s = %s" % [parameter, parameter_type, parameter_value], func_line, insert_index)
+			return
 		code_edit.insert_text("%s : %s = %s" % [parameter, parameter_type, parameter_value], func_line, insert_index)
+		return
+	if func_line_text.find("(") + 1 != insert_index:
+		code_edit.insert_text(",%s : %s" % [parameter, parameter_type], func_line, insert_index)
 		return
 	code_edit.insert_text("%s : %s" % [parameter, parameter_type], func_line, insert_index)
 
@@ -544,8 +530,8 @@ func _cleanup_current_script():
 	current_popup = null
 
 # FUNC 获取当前脚本的声明的变量
-func get_current_script_vars(code_edit : CodeEdit) -> Array:
-	var var_name_arr : Array[String] = []
+func get_current_script_vars(code_edit : CodeEdit) -> Dictionary:
+	var var_name_arr : Dictionary = {"name_and_types" : []}
 	var scripts := code_edit.text.split("\n")
 	for i : int in scripts.size():
 		if scripts[i].begins_with(" ") or scripts[i].begins_with("\t"): continue
@@ -554,7 +540,9 @@ func get_current_script_vars(code_edit : CodeEdit) -> Array:
 		if scripts[i].is_empty(): continue
 		if not scripts[i].contains("var"): continue
 		var var_name : String = get_var_line_var_name(scripts[i])
-		var_name_arr.append(var_name)
+		var var_type : String
+		# WARNING 获取类型
+		var_name_arr["name_and_types"].append([var_name, var_type])
 	return var_name_arr
 
 # FUNC 获取当前行代码
