@@ -97,19 +97,6 @@ func _find_popup_menu(node: Node) -> PopupMenu:
 		if result: return result
 	return null
 
-# FUNC 查找类名声明和继承声明的下一行
-func _find_class_and_extends_after(code_edit: CodeEdit) -> int:
-	var scripts := code_edit.text.split("\n")
-	for i : int in scripts.size():
-		if scripts[i].begins_with("#"): continue
-		if scripts[i].contains("extends"):
-			if scripts[i + 1].contains("class_name"): return i + 2
-			return i + 1
-		if scripts[i].contains("class_name"):
-			if scripts[i + 1].contains("extends"): return i + 2
-			return i + 1
-	return 0
-
 # FUNC 获取变量声明中的变量类型
 func get_variable_declaration_type(line_text : String) -> String:
 	if not line_text.contains(":"): return "Variant"
@@ -137,7 +124,7 @@ func get_line_all_var(line_text : String) -> Array:
 	if line_text.begins_with("\t#"): return []
 	var tokens := []
 	for t : String in line_text.split(" "):
-		if t in ["+", "-", "*", "/", "%", "=", ":", ":="]: continue
+		if t in ["+", "-", "*", "/", "%", "=", ":", ":=", "+=", '-=', "*=", "/=", "%="]: continue
 		if t.strip_edges() == "var": continue
 		if t in VARIABLE_REGEX_MAP.keys(): continue
 		if t.contains("#"): break
@@ -149,7 +136,8 @@ func get_line_all_var(line_text : String) -> Array:
 		if t.ends_with(":"):
 			tokens.append(t.remove_chars(":"))
 			continue
-		tokens.append(t.strip_edges())
+		tokens.append(t.strip_edges().get_slice(".", 0) if t.strip_edges().contains(".") else t.strip_edges())
+	print(tokens)
 	return tokens
 
 func _on_script_changed(script : Script) -> void:
@@ -235,7 +223,7 @@ func is_var_name(selected_text : String) -> bool:
 func is_scrpit_block(code_edit : CodeEdit) -> Array:
 	var code_start_line : int = code_edit.get_selection_from_line() + 1
 	var code_end_line : int = code_edit.get_selection_to_line() + 1
-	if get_current_line_text(code_edit).contains("func "): return [false]
+	if __get_current_line_text().contains("func "): return [false]
 	if code_start_line == code_end_line\
 	and code_edit.get_selection_from_column() == code_edit.get_selection_to_column():
 		return [false]
@@ -250,22 +238,22 @@ func _on_popup_about_to_show() -> void:
 	var current_editor : ScriptEditorBase = script_editor.get_current_editor()
 	if not current_editor: return
 
-	var code_edit = _find_code_edit(current_editor)
-	if not code_edit: return
+	_code_edit = _find_code_edit(current_editor)
+	if not _code_edit: return
 
-	var selected_text = _get_selected_text(code_edit)
+	var selected_text = __get_selected_text()
 	if selected_text.is_empty(): return
-	var line_text : String = get_current_line_text(code_edit)
+	var line_text : String = __get_current_line_text()
 	if line_text.strip_edges().begins_with("#"): return
-	var var_name_dic : Dictionary = get_current_script_vars(code_edit)
+	var var_name_dic : Dictionary = get_current_script_vars(_code_edit)
 	var var_name_arr : Array = []
 	for i in var_name_dic["name_and_types"]:
 		var_name_arr.append(i[0])
-	var is_script_block_arr : Array = is_scrpit_block(code_edit)
+	var is_script_block_arr : Array = is_scrpit_block(_code_edit)
 	if is_script_block_arr.pop_at(0):
-		_create_menu_item(
+		__create_menu_item(
 			"提取为成员方法",
-			code_edit,
+			_code_edit,
 			is_script_block_arr,
 			MenuItemType.CREATE_FUNCTION_FROM_CODE_BLOCK,
 			true
@@ -274,50 +262,50 @@ func _on_popup_about_to_show() -> void:
 	var var_type : String
 	if not line_text.contains("func "):
 		var_type = get_variable_declaration_type(line_text)
-	if is_local_variable_declaration(code_edit, line_text):
-		_create_menu_item(
+	if is_local_variable_declaration(_code_edit, line_text):
+		__create_menu_item(
 			"提取为方法参数",
-			code_edit,
+			_code_edit,
 			[line_text, var_type],
 			MenuItemType.CREATE_FUNCTION_PARAMETER_FROM_LOCAL_VARIABLE,
 			true
 		)
 	if is_variables[0] and var_type.length() > 0:
-		_create_menu_item(
+		__create_menu_item(
 			"提取为临时变量",
-			code_edit,
+			_code_edit,
 			[is_variables[1]],
 			MenuItemType.CREATE_LOCAL_VARIABLE_FROM_VALUE,
 			true
 		)
-		_create_menu_item(
+		__create_menu_item(
 			"提取为成员变量",
-			code_edit,
+			_code_edit,
 			[is_variables[1]],
 			MenuItemType.CREATE_VARIABLE_FROM_VALUE,
 		)
 	# NOTE 信号发射判断
 	var is_signal_emit_arr : Array = is_siganl_emit(line_text)
 	if is_signal_emit_arr[0]:
-		_create_menu_item(
+		__create_menu_item(
 			"生成信号",
-			code_edit,
+			_code_edit,
 			[is_signal_emit_arr[1]],
 			MenuItemType.CREATE_SIGNAL,
 			true
 		)
 	elif is_connect_signal_func(line_text, selected_text):
-		_create_menu_item(
+		__create_menu_item(
 			"生成信号连接方法",
-			code_edit,
+			_code_edit,
 			[],
 			MenuItemType.CREATE_SIGNAL_FUNCTION,
 			true
 		)
 	elif is_variable_declaration(line_text):
-		_create_menu_item(
+		__create_menu_item(
 			"生成 getter setter",
-			code_edit,
+			_code_edit,
 			[var_type],
 			MenuItemType.CREATE_VARIABLE_GET_AND_SET,
 			true
@@ -325,23 +313,71 @@ func _on_popup_about_to_show() -> void:
 	else :
 		if is_var_name(selected_text):
 			if selected_text not in var_name_arr:
-				_create_menu_item(
+				__create_menu_item(
 					"生成成员变量",
-					code_edit,
+					_code_edit,
 					[selected_text],
 					MenuItemType.CREATE_VARIABLE,
 					true
 				)
-			_create_menu_item(
+			__create_menu_item(
 				"生成临时变量",
-				code_edit,
+				_code_edit,
 				[selected_text],
 				MenuItemType.CREATE_LOCAL_VARIABLE,
 				selected_text in var_name_arr
 			)
 
+
+# FUNC 当 Popup Menu 中的 item 被点击时的方法
+func _on_menu_item_pressed(id: int, code_edit: CodeEdit):
+	match id:
+		MenuItemType.CREATE_LOCAL_VARIABLE_FROM_VALUE:
+			__create_local_variable(all_data[id][0])
+		MenuItemType.CREATE_VARIABLE_FROM_VALUE:
+			__create_global_variable(all_data[id][0])
+		MenuItemType.CREATE_VARIABLE_GET_AND_SET:
+			__create_get_and_set(all_data[id][0])
+		MenuItemType.CREATE_SIGNAL_FUNCTION:
+			__create_signal_function()
+		MenuItemType.CREATE_SIGNAL:
+			__create_signal(all_data[id][0])
+		MenuItemType.CREATE_VARIABLE:
+			__create_var_declaration(all_data[id][0])
+		MenuItemType.CREATE_LOCAL_VARIABLE:
+			__create_local_var_declaration(all_data[id][0])
+		MenuItemType.CREATE_FUNCTION_FROM_CODE_BLOCK:
+			__create_function_from_code_block(all_data[id])
+		MenuItemType.CREATE_FUNCTION_PARAMETER_FROM_LOCAL_VARIABLE:
+			create_function_parameter_from_local_variable(code_edit, all_data[id])
+
+# FUNC 清理当前脚本二级窗口连接
+func _cleanup_current_script():
+	if current_popup and current_popup.is_connected("about_to_popup", _on_popup_about_to_show):
+		current_popup.disconnect("about_to_popup", _on_popup_about_to_show)
+	current_popup = null
+
+# FUNC 获取当前脚本的声明的变量
+func get_current_script_vars(code_edit : CodeEdit) -> Dictionary:
+	var var_name_arr : Dictionary = {"name_and_types" : []}
+	var scripts := code_edit.text.split("\n")
+	for i : int in scripts.size():
+		if scripts[i].begins_with(" ") or scripts[i].begins_with("\t"): continue
+		if scripts[i].contains("func "): continue
+		if scripts[i].begins_with("#"): continue
+		if scripts[i].is_empty(): continue
+		if not scripts[i].contains("var "): continue
+		var var_name : String = get_var_line_var_name(scripts[i])
+		var var_type : String
+		# WARNING 获取类型
+		var_name_arr["name_and_types"].append([var_name, var_type])
+	return var_name_arr
+
+# NOTE 临时的代码编辑器节点：重构
+var _code_edit : CodeEdit
+
 # FUNC 创建菜单按钮
-func _create_menu_item(item_text: String, code_edit: CodeEdit, data : Array, item_type : MenuItemType, has_separator : bool = false) -> void:
+func __create_menu_item(item_text: String, code_edit: CodeEdit, data : Array, item_type : MenuItemType, has_separator : bool = false) -> void:
 	if has_separator: current_popup.add_separator()
 	current_popup.add_item(item_text, item_type)
 	all_data[item_type] = data
@@ -350,102 +386,187 @@ func _create_menu_item(item_text: String, code_edit: CodeEdit, data : Array, ite
 		current_popup.disconnect("id_pressed", _on_menu_item_pressed)
 	current_popup.connect("id_pressed", _on_menu_item_pressed.bind(code_edit))
 
-# FUNC 替换选中的代码片段
-func replace_selection(code_edit: CodeEdit, new_text: String, line_mode : bool = false) -> bool:
-	var current_line : int = code_edit.get_caret_line()
-	var selection_start = code_edit.get_selection_origin_column()
-	var selection_end = code_edit.get_selection_to_column()
-	var selection_start_line = code_edit.get_selection_from_line()
-	var selection_end_line = code_edit.get_selection_to_line()
-	# 检查是否有选中内容
-	if line_mode:
-		code_edit.remove_text(selection_start_line, 0, selection_end_line, selection_end)
-		code_edit.insert_text(new_text, selection_start_line, 0)
-		return true
-	if selection_start == selection_end and selection_start_line == selection_end_line:
-		return false
-	code_edit.remove_text(selection_start_line, selection_start, selection_end_line, selection_end)
-	code_edit.insert_text(new_text, selection_start_line, selection_start)
-	return true
-
-# FUNC 将值提取为临时变量
-func create_local_variable(code_edit: CodeEdit, type : String) -> void:
-	var current_line : int = code_edit.get_caret_line()
-	var line_text : String = get_current_line_text(code_edit)
-	var selected_text : String = code_edit.get_selected_text()
+## FUNC 将值提取为临时变量
+#func create_local_variable(code_edit: CodeEdit, type : String) -> void:
+	#var current_line : int = code_edit.get_caret_line()
+	#var line_text : String = __get_current_line_text()
+	#var selected_text : String = code_edit.get_selected_text()
+#
+	#var code_text: String = "\tvar new_value : %s = %s" % [type, selected_text]
+#
+	#if __replace_selection("new_value"):
+		#code_edit.insert_line_at(current_line, code_text)
+		#code_edit.select(current_line, 5, current_line, 14)
+		#code_edit.add_selection_for_next_occurrence()
+# FUNC 将值提取为临时变量：重构
+func __create_local_variable(type : String) -> void:
+	# 获取当前鼠标行
+	var current_line : int = _code_edit.get_caret_line()
+	# 当前鼠标行的文本
+	var line_text : String = __get_current_line_text()
+	# 选择的文本
+	var selected_text : String = _code_edit.get_selected_text()
 
 	var code_text: String = "\tvar new_value : %s = %s" % [type, selected_text]
 
-	if replace_selection(code_edit, "new_value"):
-		code_edit.insert_line_at(current_line, code_text)
-		code_edit.select(current_line, 5, current_line, 14)
-		code_edit.add_selection_for_next_occurrence()
+	if __replace_selection("new_value"):
+		_code_edit.insert_line_at(current_line, code_text)
+		_code_edit.select(current_line, 5, current_line, 14)
+		_code_edit.add_selection_for_next_occurrence()
 
-# FUNC 将值提取为全局变量
-func create_global_variable(code_edit: CodeEdit, type : String) -> void:
-	var current_line : int = code_edit.get_caret_line()
-	var line_text : String = get_current_line_text(code_edit)
-	var selected_text : String = code_edit.get_selected_text()
+## FUNC 将值提取为全局变量
+#func create_global_variable(code_edit: CodeEdit, type : String) -> void:
+	#var current_line : int = code_edit.get_caret_line()
+	#var line_text : String = __get_current_line_text()
+	#var selected_text : String = code_edit.get_selected_text()
+#
+	#var code_text: String = "var new_value : %s = %s" % [type, selected_text]
+	#var var_line : int = _find_class_and_extends_after(code_edit)
+	#if __replace_selection("new_value"):
+		#code_edit.insert_line_at(var_line, code_text)
+		#code_edit.select(var_line, 4, var_line, 13)
+		#code_edit.add_selection_for_next_occurrence()
+# FUNC 将值提取为全局变量：重构
+func __create_global_variable(type : String) -> void:
+	# 获取当前鼠标行
+	var current_line : int = _code_edit.get_caret_line()
+	# 当前鼠标行的文本
+	var line_text : String = __get_current_line_text()
+	# 选择的文本
+	var selected_text : String = _code_edit.get_selected_text()
 
-	var code_text: String = "var new_value : %s = %s" % [type, selected_text]
-	var var_line : int = _find_class_and_extends_after(code_edit)
-	if replace_selection(code_edit, "new_value"):
-		code_edit.insert_line_at(var_line, code_text)
-		code_edit.select(var_line, 4, var_line, 13)
-		code_edit.add_selection_for_next_occurrence()
+	var code_text: String = "\nvar new_value : %s = %s" % [type, selected_text]
+	var var_line : int = __find_class_and_extends_after()
+	if __replace_selection("new_value"):
+		_code_edit.insert_line_at(var_line, code_text)
+		_code_edit.select(var_line + 1, 4, var_line + 1, 13)
+		_code_edit.add_selection_for_next_occurrence()
 
-# FUNC 生成当前行变量声明的 get set
-func create_get_and_set(code_edit: CodeEdit, type : String) -> void:
-	var current_line : int = code_edit.get_caret_line()
-	var line_text : String = code_edit.get_line(current_line)
+## FUNC 生成当前行变量声明的 get set
+#func create_get_and_set(code_edit: CodeEdit, type : String) -> void:
+	#var current_line : int = code_edit.get_caret_line()
+	#var line_text : String = code_edit.get_line(current_line)
+#
+	#var var_name : String = get_var_line_var_name(line_text)
+	#var code_text: String = ":\n\tget:\n\t\treturn %s\n\tset(v):\n\t\t%s = v" % [var_name, var_name]
+	#code_edit.insert_text(code_text, current_line, line_text.length())
+# FUNC 生成当前行变量声明的 get set：重构
+func __create_get_and_set(type : String) -> void:
+	var current_line : int = _code_edit.get_caret_line()
+	var line_text : String = _code_edit.get_line(current_line)
 
 	var var_name : String = get_var_line_var_name(line_text)
 	var code_text: String = ":\n\tget:\n\t\treturn %s\n\tset(v):\n\t\t%s = v" % [var_name, var_name]
-	code_edit.insert_text(code_text, current_line, line_text.length())
+	_code_edit.insert_text(code_text, current_line, line_text.length())
 
-# FUNC 生成当前信号连接的方法
-func create_signal_function(code_edit: CodeEdit) -> void:
-	var selected_text = _get_selected_text(code_edit)
-	var code_text: String = "func %s() -> void:\n\tpass" % [selected_text]
-	code_edit.insert_line_at(code_edit.get_line_count() - 1, code_text)
+## FUNC 生成当前信号连接的方法
+#func create_signal_function(code_edit: CodeEdit) -> void:
+	#var selected_text = __get_selected_text()
+	#var code_text: String = "func %s() -> void:\n\tpass" % [selected_text]
+	#code_edit.insert_line_at(code_edit.get_line_count() - 1, code_text)
+# FUNC 生成当前信号连接的方法：重构
+func __create_signal_function() -> void:
+	var selected_text = __get_selected_text()
+	var code_text: String = "\nfunc %s() -> void:\n\tpass" % [selected_text]
+	_code_edit.insert_line_at(_code_edit.get_line_count() - 1, code_text)
 
-# FUNC 生成信号
-func create_signal(code_edit : CodeEdit, type : String) -> void:
-	var code_text: String = "signal %s()" % [type]
-	var var_line : int = _find_class_and_extends_after(code_edit)
-	code_edit.insert_line_at(var_line, code_text)
+## FUNC 生成信号
+#func create_signal(code_edit : CodeEdit, type : String) -> void:
+	#var code_text: String = "signal %s()" % [type]
+	#var var_line : int = __find_class_and_extends_after()
+	#code_edit.insert_line_at(var_line, code_text)
+# FUNC 生成信号：重构
+func __create_signal(type : String) -> void:
+	var code_text: String = "\nsignal %s()" % [type]
+	var var_line : int = __find_class_and_extends_after()
+	_code_edit.insert_line_at(var_line, code_text)
 
-# FUNC 生成变量声明
-func create_var_declaration(code_edit : CodeEdit, type : String) -> void:
+## FUNC 生成变量声明
+#func create_var_declaration(code_edit : CodeEdit, type : String) -> void:
+	#var code_text: String = "var %s : Variant" % [type]
+	#var var_line : int = __find_class_and_extends_after()
+	#code_edit.insert_line_at(var_line, code_text)
+	#var current_line_length : int = code_edit.get_line(var_line).length()
+	#code_edit.select(var_line, current_line_length - 7, var_line, current_line_length)
+# FUNC 生成变量声明：重构
+func __create_var_declaration(type : String) -> void:
 	var code_text: String = "var %s : Variant" % [type]
-	var var_line : int = _find_class_and_extends_after(code_edit)
-	code_edit.insert_line_at(var_line, code_text)
-	var current_line_length : int = code_edit.get_line(var_line).length()
-	code_edit.select(var_line, current_line_length - 7, var_line, current_line_length)
+	var var_line : int = __find_class_and_extends_after()
+	_code_edit.insert_line_at(var_line, code_text)
+	var current_line_length : int = _code_edit.get_line(var_line).length()
+	_code_edit.select(var_line, current_line_length - 7, var_line, current_line_length)
 
-# FUNC 生成临时变量声明
-func create_local_var_declaration(code_edit : CodeEdit, type : String) -> void:
-	var current_line : int = code_edit.get_caret_line()
+## FUNC 生成临时变量声明
+#func create_local_var_declaration(code_edit : CodeEdit, type : String) -> void:
+	#var current_line : int = code_edit.get_caret_line()
+	#var code_text: String = "\tvar %s : Variant" % [type]
+	#code_edit.insert_line_at(current_line, code_text)
+	#var current_line_length : int = code_edit.get_line(current_line).length()
+	#code_edit.select(current_line, current_line_length - 7, current_line, current_line_length)
+# FUNC 生成临时变量声明：重构
+func __create_local_var_declaration(type : String) -> void:
+	var current_line : int = _code_edit.get_caret_line()
 	var code_text: String = "\tvar %s : Variant" % [type]
-	code_edit.insert_line_at(current_line, code_text)
-	var current_line_length : int = code_edit.get_line(current_line).length()
-	code_edit.select(current_line, current_line_length - 7, current_line, current_line_length)
+	_code_edit.insert_line_at(current_line, code_text)
+	var current_line_length : int = _code_edit.get_line(current_line).length()
+	_code_edit.select(current_line, current_line_length - 7, current_line, current_line_length)
 
+## FUNC 将代码块提取为成员方法
+#func create_function_from_code_block(code_edit : CodeEdit, data : Array) -> void:
+	#var current_line : int = code_edit.get_selection_from_line()\
+		#if code_edit.get_selection_from_line() < code_edit.get_selection_to_line()\
+		#else code_edit.get_selection_to_line()
+	#var code_block : String = ""
+	#var get_local_vars : Array = []
+	#var parameters : Array = []
+	#var var_name_dic : Dictionary = get_current_script_vars(code_edit)
+	#var var_name_arr : Array = []
+	## 获取全局变量的名字
+	#for i in var_name_dic["name_and_types"]:
+		#var_name_arr.append(i[0])
+	#for i in range(data[0], data[1] + 1):
+		#var line_text : String = code_edit.get_line(i - 1)
+		## 获取临时变量的名字
+		#if line_text.contains("var"):
+			#get_local_vars.append(get_var_line_var_name(line_text))
+		## 得到所有变量名
+		#for var_parameter in get_line_all_var(line_text):
+			#if var_parameter in parameters: continue
+			#parameters.append(var_parameter)
+		#for parameter in get_local_vars:
+			#if parameter in parameters: parameters.erase(parameter)
+		#for parameter in var_name_arr:
+			#if parameter in var_name_arr: parameters.erase(parameter)
+		#if i == data[0]:
+			#code_block = line_text
+			#continue
+		#code_block += "\n" + line_text
+	#var parameter_str : String = ""
+	#for i in parameters.size():
+		#if i == 0:
+			#parameter_str = parameters[i]
+			#continue
+		#parameter_str += ", " + parameters[i]
+	#var code_text : String = "func new_func_name(%s) -> void:\n%s" % [parameter_str, code_block]
+	#var code_line : int = code_edit.get_line_count() - 1
+	#if __replace_selection("\tnew_func_name()", true):
+		#code_edit.insert_line_at(code_edit.get_line_count() - 1, code_text)
+		#code_edit.select(current_line, 1, current_line, 14)
+		#code_edit.add_selection_for_next_occurrence()
 # FUNC 将代码块提取为成员方法
-func create_function_from_code_block(code_edit : CodeEdit, data : Array) -> void:
-	var current_line : int = code_edit.get_selection_from_line()\
-		if code_edit.get_selection_from_line() < code_edit.get_selection_to_line()\
-		else code_edit.get_selection_to_line()
+# WARNING 需要提高变量名识别的准度
+func __create_function_from_code_block(data : Array) -> void:
+	var current_line : int = _code_edit.get_selection_from_line() if _code_edit.get_selection_from_line() < _code_edit.get_selection_to_line() else _code_edit.get_selection_to_line()
 	var code_block : String = ""
 	var get_local_vars : Array = []
 	var parameters : Array = []
-	var var_name_dic : Dictionary = get_current_script_vars(code_edit)
+	var var_name_dic : Dictionary = get_current_script_vars(_code_edit)
 	var var_name_arr : Array = []
 	# 获取全局变量的名字
 	for i in var_name_dic["name_and_types"]:
 		var_name_arr.append(i[0])
 	for i in range(data[0], data[1] + 1):
-		var line_text : String = code_edit.get_line(i - 1)
+		var line_text : String = _code_edit.get_line(i - 1)
 		# 获取临时变量的名字
 		if line_text.contains("var"):
 			get_local_vars.append(get_var_line_var_name(line_text))
@@ -467,13 +588,12 @@ func create_function_from_code_block(code_edit : CodeEdit, data : Array) -> void
 			parameter_str = parameters[i]
 			continue
 		parameter_str += ", " + parameters[i]
-	var code_text : String = "func new_func_name(%s) -> void:\n%s" % [parameter_str, code_block]
-	var code_line : int = code_edit.get_line_count() - 1
-	if replace_selection(code_edit, "\tnew_func_name()", true):
-		code_edit.insert_line_at(code_edit.get_line_count() - 1, code_text)
-		code_edit.select(current_line, 1, current_line, 14)
-		code_edit.add_selection_for_next_occurrence()
-
+	var code_text : String = "\nfunc new_func_name(%s) -> void:\n%s" % [parameter_str, code_block]
+	var code_line : int = _code_edit.get_line_count() - 1
+	if __replace_selection("\tnew_func_name(%s)" % parameter_str, true):
+		_code_edit.insert_line_at(_code_edit.get_line_count() - 1, code_text)
+		_code_edit.select(current_line, 1, current_line, 14)
+		_code_edit.add_selection_for_next_occurrence()
 # FUNC 将临时变量提取为方法的参数
 func create_function_parameter_from_local_variable(code_edit : CodeEdit, data : Array) -> void:
 	var line_text : String = data[0]
@@ -499,75 +619,119 @@ func create_function_parameter_from_local_variable(code_edit : CodeEdit, data : 
 		code_edit.insert_text(",%s : %s" % [parameter, parameter_type], func_line, insert_index)
 		return
 	code_edit.insert_text("%s : %s" % [parameter, parameter_type], func_line, insert_index)
+#region 工具方法
+## FUNC 获取代码块
+func __get_code_block() -> String:
+	var code_block : String = ""
+	return code_block
 
-
-# FUNC 当 Popup Menu 中的 item 被点击时的方法
-func _on_menu_item_pressed(id: int, code_edit: CodeEdit):
-	match id:
-		MenuItemType.CREATE_LOCAL_VARIABLE_FROM_VALUE:
-			create_local_variable(code_edit, all_data[id][0])
-		MenuItemType.CREATE_VARIABLE_FROM_VALUE:
-			create_global_variable(code_edit, all_data[id][0])
-		MenuItemType.CREATE_VARIABLE_GET_AND_SET:
-			create_get_and_set(code_edit, all_data[id][0])
-		MenuItemType.CREATE_SIGNAL_FUNCTION:
-			create_signal_function(code_edit)
-		MenuItemType.CREATE_SIGNAL:
-			create_signal(code_edit, all_data[id][0])
-		MenuItemType.CREATE_VARIABLE:
-			create_var_declaration(code_edit, all_data[id][0])
-		MenuItemType.CREATE_LOCAL_VARIABLE:
-			create_local_var_declaration(code_edit, all_data[id][0])
-		MenuItemType.CREATE_FUNCTION_FROM_CODE_BLOCK:
-			create_function_from_code_block(code_edit, all_data[id])
-		MenuItemType.CREATE_FUNCTION_PARAMETER_FROM_LOCAL_VARIABLE:
-			create_function_parameter_from_local_variable(code_edit, all_data[id])
-
-# FUNC 清理当前脚本二级窗口连接
-func _cleanup_current_script():
-	if current_popup and current_popup.is_connected("about_to_popup", _on_popup_about_to_show):
-		current_popup.disconnect("about_to_popup", _on_popup_about_to_show)
-	current_popup = null
-
-# FUNC 获取当前脚本的声明的变量
-func get_current_script_vars(code_edit : CodeEdit) -> Dictionary:
-	var var_name_arr : Dictionary = {"name_and_types" : []}
-	var scripts := code_edit.text.split("\n")
-	for i : int in scripts.size():
-		if scripts[i].begins_with(" ") or scripts[i].begins_with("\t"): continue
-		if scripts[i].contains("func"): continue
-		if scripts[i].begins_with("#"): continue
-		if scripts[i].is_empty(): continue
-		if not scripts[i].contains("var"): continue
-		var var_name : String = get_var_line_var_name(scripts[i])
-		var var_type : String
-		# WARNING 获取类型
-		var_name_arr["name_and_types"].append([var_name, var_type])
-	return var_name_arr
-
-# FUNC 获取当前行代码
-func get_current_line_text(_code_edit: CodeEdit) -> String:
-	return _code_edit.get_line(_code_edit.get_caret_line())
-
-# FUNC 获取光标所在的字段
-func get_word_under_cursor(code_edit: CodeEdit) -> String:
-	var caret_line = code_edit.get_caret_line()
-	var caret_column = code_edit.get_caret_column()
-	var line_text = code_edit.get_line(caret_line)
-
+## FUNC 获取光标所在的字段
+#func get_word_under_cursor(code_edit: CodeEdit) -> String:
+	#var caret_line = code_edit.get_caret_line()
+	#var caret_column = code_edit.get_caret_column()
+	#var line_text = code_edit.get_line(caret_line)
+	#var start = caret_column
+	#while start > 0 and line_text[start - 1].is_subsequence_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"):
+		#start -= 1
+	#var end = caret_column
+	#while end < line_text.length() and line_text[end].is_subsequence_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"):
+		#end += 1
+	#return line_text.substr(start, end - start)
+# FUNC 获取光标所在的字段：重构
+func __get_word_under_cursor() -> String:
+	var caret_line = _code_edit.get_caret_line()
+	var caret_column = _code_edit.get_caret_column()
+	var line_text = _code_edit.get_line(caret_line)
 	var start = caret_column
 	while start > 0 and line_text[start - 1].is_subsequence_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"):
 		start -= 1
-
 	var end = caret_column
 	while end < line_text.length() and line_text[end].is_subsequence_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"):
 		end += 1
-
 	return line_text.substr(start, end - start)
 
-# FUNC 获取选择的字段
-func _get_selected_text(_code_edit: CodeEdit) -> String:
+## FUNC 获取选择的字段
+#func _get_selected_text(_code_edit: CodeEdit) -> String:
+	#var selected_text : String = _code_edit.get_selected_text().strip_edges()
+	#if selected_text.is_empty():
+		#selected_text = get_word_under_cursor(_code_edit)
+	#return selected_text
+# FUNC 获取选择的字段：重构
+func __get_selected_text() -> String:
 	var selected_text : String = _code_edit.get_selected_text().strip_edges()
 	if selected_text.is_empty():
-		selected_text = get_word_under_cursor(_code_edit)
+		selected_text = __get_word_under_cursor()
 	return selected_text
+
+## FUNC 获取当前行代码
+#func get_current_line_text(_code_edit: CodeEdit) -> String:
+	#return _code_edit.get_line(_code_edit.get_caret_line())
+# FUNC 获取当前行的文本：重构
+func __get_current_line_text() -> String:
+	return _code_edit.get_line(_code_edit.get_caret_line())
+
+## FUNC 替换选中的代码片段
+#func replace_selection(code_edit: CodeEdit, new_text: String, line_mode : bool = false) -> bool:
+	#var current_line : int = code_edit.get_caret_line()
+	#var selection_start = code_edit.get_selection_origin_column()
+	#var selection_end = code_edit.get_selection_to_column()
+	#var selection_start_line = code_edit.get_selection_from_line()
+	#var selection_end_line = code_edit.get_selection_to_line()
+	## 检查是否有选中内容
+	#if line_mode:
+		#code_edit.remove_text(selection_start_line, 0, selection_end_line, selection_end)
+		#code_edit.insert_text(new_text, selection_start_line, 0)
+		#return true
+	#if selection_start == selection_end and selection_start_line == selection_end_line:
+		#return false
+	#code_edit.remove_text(selection_start_line, selection_start, selection_end_line, selection_end)
+	#code_edit.insert_text(new_text, selection_start_line, selection_start)
+	#return true
+# FUNC 替换选中的代码片段：重构
+func __replace_selection(new_text: String, line_mode : bool = false) -> bool:
+	# 当前行
+	var current_line : int = _code_edit.get_caret_line()
+	# 选择的开始点
+	var selection_start = _code_edit.get_selection_origin_column()
+	# 选择的结束点
+	var selection_end = _code_edit.get_selection_to_column()
+	# 选择的开始行
+	var selection_start_line = _code_edit.get_selection_from_line()
+	# 选择的结束行
+	var selection_end_line = _code_edit.get_selection_to_line()
+	# 检查是否有选中内容
+	if line_mode:
+		_code_edit.remove_text(selection_start_line, 0, selection_end_line, selection_end)
+		_code_edit.insert_text(new_text, selection_start_line, 0)
+		return true
+	if selection_start == selection_end and selection_start_line == selection_end_line:
+		return false
+	_code_edit.remove_text(selection_start_line, selection_start, selection_end_line, selection_end)
+	_code_edit.insert_text(new_text, selection_start_line, selection_start)
+	return true
+
+## FUNC 查找类名声明和继承声明的下一行
+#func _find_class_and_extends_after(code_edit: CodeEdit) -> int:
+	#var scripts := code_edit.text.split("\n")
+	#for i : int in scripts.size():
+		#if scripts[i].begins_with("#"): continue
+		#if scripts[i].contains("extends"):
+			#if scripts[i + 1].contains("class_name"): return i + 2
+			#return i + 1
+		#if scripts[i].contains("class_name"):
+			#if scripts[i + 1].contains("extends"): return i + 2
+			#return i + 1
+	#return 0
+# FUNC 查找类名声明和继承声明的下一行：重构
+func __find_class_and_extends_after() -> int:
+	var scripts := _code_edit.text.split("\n")
+	for i : int in scripts.size():
+		if scripts[i].begins_with("#"): continue
+		if scripts[i].contains("extends"):
+			if scripts[i + 1].contains("class_name"): return i + 2
+			return i + 1
+		if scripts[i].contains("class_name"):
+			if scripts[i + 1].contains("extends"): return i + 2
+			return i + 1
+	return 0
+#endregion
